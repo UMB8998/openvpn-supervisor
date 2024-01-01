@@ -25,9 +25,20 @@
 """Blah"""
 
 import logging
+from logging.handlers import TimedRotatingFileHandler
 import os
 import subprocess
 import time
+import argparse
+
+logfolder = "/var/log/openvpn-supervisor/"
+
+parser = argparse.ArgumentParser(
+                    prog='OPenVPN-Supervisor',
+                    description='Restart Stale OpenVPN Connections')
+parser.add_argument('--ip')
+parser.add_argument('--service')
+args = parser.parse_args()
 
 
 def loggingsetup():
@@ -36,13 +47,16 @@ def loggingsetup():
     logger = logging.getLogger("openvpn-supervisor")
     logger.setLevel(logging.INFO)
 
+    if not os.path.exists(logfolder):
+        os.makedirs(logfolder)
+    
     logpath = os.path.join(
-        "/var/log/openvpn-supervisor", "openvpn-supervisor.log")
+        logfolder, "openvpn-supervisor.log")
 
     logformat = logging.Formatter(
         '%(asctime)s - %(message)s', '%Y-%m-%d %H:%M:%S')
 
-    logformatter = logging.FileHandler(logpath, mode="w")
+    logformatter = TimedRotatingFileHandler(filename=logpath,when='D',interval=30,backupCount=5)
     logformatter.setFormatter(logformat)
     logger.addHandler(logformatter)
 
@@ -52,7 +66,7 @@ def loggingsetup():
 def openvpnservicerestart():
     """Blah"""
 
-    status = sendtoshell("service openvpn restart")
+    status = sendtoshell("service openvpn-client@" + args.service + " restart")
 
     return status
 
@@ -97,13 +111,12 @@ def main():
 
     time.sleep(300)
 
-    logger.info("Monitoring started - logs will appear at "
-                "/var/log/openvpn-supervisor/log")
+    logger.info("Monitoring started - logs will appear at " + logfolder)
 
     while notdone:
 
         # Ping out
-        status = sendtoshell("ping -c 1 -w2 www.google.com")
+        status = sendtoshell("ping -c 1 -w2 " + args.ip)
 
         # If can't ping, issue restart.
         if status[2] > 0:
