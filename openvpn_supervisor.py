@@ -108,6 +108,7 @@ def main():
                 "service when the connection becomes stale.")
     logger.info("This software utility was developed by James Gebbie-Rayet "
                 "and is made available under the MIT license terms.")
+    logger.info("We are using ip: " + args.ip + " and service: " + args.service)
 
     time.sleep(300)
 
