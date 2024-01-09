@@ -1,12 +1,12 @@
 [Unit]
 Description=A simple OpenVPN supervisor utility to watch for stale connections.
 After=multi-user.target
-Environment=ip=
-Environment=service=
 
 [Service]
+Environment="ip="
+Environment="service="
 Type=idle
-ExecStart=/usr/bin/python /opt/openvpn-supervisor/openvpn_supervisor.py --ip ${ip} --service ${service}
+ExecStart=/usr/bin/python /opt/openvpn-supervisor/openvpn_supervisor.py --ip $ip --service $service
 
 [Install]
 WantedBy=multi-user.target
