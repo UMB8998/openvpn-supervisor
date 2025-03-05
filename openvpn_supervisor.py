@@ -30,6 +30,9 @@ import os
 import subprocess
 import time
 import argparse
+import fcntl
+import socket
+import struct
 
 logfolder = "/var/log/openvpn-supervisor/"
 
