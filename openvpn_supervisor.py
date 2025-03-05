@@ -38,6 +38,7 @@ parser = argparse.ArgumentParser(
                     description='Restart Stale OpenVPN Connections')
 parser.add_argument('--ip')
 parser.add_argument('--service')
+parser.add_argument('--remoteip')
 args = parser.parse_args()
 
 
@@ -94,6 +95,21 @@ def sendtoshell(cmd):
 
     return stdout, stderr, errcode
 
+def get_ip_linux(interface: str) -> str:
+    """
+    Uses the Linux SIOCGIFADDR ioctl to find the IP address associated
+    with a network interface, given the name of that interface, e.g.
+    "eth0". Only works on GNU/Linux distributions.
+    Source: https://bit.ly/3dROGBN
+    Returns:
+        The IP address in quad-dotted notation of four decimal integers.
+    """
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    packed_iface = struct.pack('256s', interface.encode('utf_8'))
+    packed_addr = fcntl.ioctl(sock.fileno(), 0x8915, packed_iface)[20:24]
+    return socket.inet_ntoa(packed_addr)
+
 
 def main():
     """Blah"""
@@ -102,6 +118,8 @@ def main():
 
     logger = loggingsetup()
 
+    currentip = get_ip_linux('tun0')
+
     logger.info("Starting the OpenVPN Supervisor.")
     logger.info("This simple software utility is designed to monitor the "
                 "status of an OpenVPN connection and restart the OpenVPN "
@@ -109,6 +127,7 @@ def main():
     logger.info("This software utility was developed by James Gebbie-Rayet "
                 "and is made available under the MIT license terms.")
     logger.info("We are using ip: " + args.ip + " and service: " + args.service)
+    logger.info("Current ip: " + currentip + " and supossed ip: " + args.remoteip)
 
     time.sleep(300)
 
@@ -118,6 +137,30 @@ def main():
 
         # Ping out
         status = sendtoshell("ping -c 1 -w2 " + args.ip)
+
+        if currentip != args.remoteip:
+            logger.info("VPN IP not Correct")
+
+            status = openvpnservicerestart()
+
+            if status[2] == 0:
+
+                logger.info("OpenVPN has been successfully restarted.")
+
+            else:
+
+                notdone = False
+
+                logger.info("ERROR - OpenVPN could not be restarted, here is "
+                            "the output of stdout, stderr and the errorcode:"
+                            "\n\nstdout:\n{0}\n\nstderr:{1}\n\nerrcode = {2}"
+                            .format(status[0], status[1], status[2]))
+
+                logger.info("If the error message is to do with 'permissions' "
+                            "or 'access denied' then you need to make sure "
+                            "that this utility is running as root.")
+
+                time.sleep(120)          
 
         # If can't ping, issue restart.
         if status[2] > 0:
