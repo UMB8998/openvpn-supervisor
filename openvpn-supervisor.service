@@ -7,7 +7,7 @@ Environment="ip="
 Environment="service="
 Environment="remoteip="
 Type=idle
-ExecStart=/usr/bin/python /opt/openvpn-supervisor/openvpn_supervisor.py --ip $ip --service $service --remoteip &remoteip
+ExecStart=/usr/bin/python /opt/openvpn-supervisor/openvpn_supervisor.py --ip $ip --service $service --remoteip $remoteip
 
 [Install]
 WantedBy=multi-user.target
