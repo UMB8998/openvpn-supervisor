@@ -8,6 +8,8 @@ Environment="service="
 Environment="remoteip="
 Type=idle
 ExecStart=/usr/bin/python /opt/openvpn-supervisor/openvpn_supervisor.py --ip $ip --service $service --remoteip $remoteip
+Restart=on-failure
+RestartSec=30
 
 [Install]
 WantedBy=multi-user.target
