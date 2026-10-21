@@ -1,8 +1,9 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 # MIT License
 #
 # Copyright (c) 2018 James Gebbie-Rayet
+# Modifications (c) 2026 ExtraIoT
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal
@@ -22,179 +23,149 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-"""Blah"""
+"""Restart an OpenVPN client whose tunnel has gone stale.
 
-import logging
-from logging.handlers import TimedRotatingFileHandler
-import os
-import subprocess
-import time
+Every --interval seconds the supervisor checks two things:
+  * the tunnel interface (--interface, default tun0) exists and, when
+    --remoteip is given, carries that address;
+  * --ip (normally the VPN server or another host on the VPN) answers a ping.
+
+A wrong/missing tunnel address triggers an immediate restart. Ping failures
+must happen --failures times in a row (default 2) before a restart, so one
+lost packet does not drop a working tunnel. A failed restart is logged and
+retried on the next cycle; the supervisor never exits on its own.
+"""
+
 import argparse
 import fcntl
+import logging
+import os
 import socket
 import struct
+import subprocess
+import sys
+import time
+from logging.handlers import TimedRotatingFileHandler
 
-logfolder = "/var/log/openvpn-supervisor/"
-
-parser = argparse.ArgumentParser(
-                    prog='OPenVPN-Supervisor',
-                    description='Restart Stale OpenVPN Connections')
-parser.add_argument('--ip')
-parser.add_argument('--service')
-parser.add_argument('--remoteip')
-args = parser.parse_args()
+LOGFOLDER = "/var/log/openvpn-supervisor/"
 
 
-def loggingsetup():
-    """Blah"""
+def parse_args():
+    parser = argparse.ArgumentParser(
+        prog="openvpn-supervisor",
+        description="Restart stale OpenVPN client connections")
+    parser.add_argument("--ip", required=True,
+                        help="address to ping through the tunnel")
+    parser.add_argument("--service", required=True,
+                        help="openvpn-client@<service> instance name")
+    parser.add_argument("--remoteip", default=None,
+                        help="expected tunnel address (optional)")
+    parser.add_argument("--interface", default="tun0")
+    parser.add_argument("--interval", type=int, default=120,
+                        help="seconds between checks")
+    parser.add_argument("--startup-delay", type=int, default=300,
+                        help="seconds to wait before the first check")
+    parser.add_argument("--failures", type=int, default=2,
+                        help="consecutive ping failures before a restart")
+    parser.add_argument("--settle", type=int, default=30,
+                        help="seconds to wait after a restart before checking again")
+    return parser.parse_args()
 
+
+def logging_setup():
     logger = logging.getLogger("openvpn-supervisor")
     logger.setLevel(logging.INFO)
+    fmt = logging.Formatter("%(asctime)s - %(message)s", "%Y-%m-%d %H:%M:%S")
 
-    if not os.path.exists(logfolder):
-        os.makedirs(logfolder)
-    
-    logpath = os.path.join(
-        logfolder, "openvpn-supervisor.log")
+    # Always log to stdout so systemd's journal has the history.
+    stream = logging.StreamHandler(sys.stdout)
+    stream.setFormatter(logging.Formatter("%(message)s"))
+    logger.addHandler(stream)
 
-    logformat = logging.Formatter(
-        '%(asctime)s - %(message)s', '%Y-%m-%d %H:%M:%S')
-
-    logformatter = TimedRotatingFileHandler(filename=logpath,when='D',interval=30,backupCount=5)
-    logformatter.setFormatter(logformat)
-    logger.addHandler(logformatter)
+    try:
+        os.makedirs(LOGFOLDER, exist_ok=True)
+        filelog = TimedRotatingFileHandler(
+            filename=os.path.join(LOGFOLDER, "openvpn-supervisor.log"),
+            when="D", interval=30, backupCount=5)
+        filelog.setFormatter(fmt)
+        logger.addHandler(filelog)
+    except OSError as err:  # e.g. read-only or full /var/log
+        logger.warning("File logging disabled: %s", err)
 
     return logger
 
 
-def openvpnservicerestart():
-    """Blah"""
-
-    status = sendtoshell("service openvpn-client@" + args.service + " restart")
-
-    return status
-
-
 def sendtoshell(cmd):
-    """Blah"""
+    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          shell=False, check=False)
+    return (proc.stdout.decode("utf-8", "replace"),
+            proc.stderr.decode("utf-8", "replace"),
+            proc.returncode)
 
-    proc = subprocess.Popen(cmd,
-                            stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE,
-                            shell=True)
 
-    stdout, stderr = proc.communicate()
-    errcode = proc.returncode
-
-    # Format the stdout to utf-8 for python 3.
-    if not isinstance(stdout, str):
-
-        stdout = stdout.decode("utf-8")
-
-    # Format the stderr to utf-8 for python 3.
-    if not isinstance(stdout, str):
-
-        stderr = stderr.decode("utf-8")
-
-    return stdout, stderr, errcode
-
-def get_ip_linux(interface: str) -> str:
-    """
-    Uses the Linux SIOCGIFADDR ioctl to find the IP address associated
-    with a network interface, given the name of that interface, e.g.
-    "eth0". Only works on GNU/Linux distributions.
-    Source: https://bit.ly/3dROGBN
-    Returns:
-        The IP address in quad-dotted notation of four decimal integers.
-    """
-
+def get_ip_linux(interface):
+    """Return the IPv4 address of interface, or None if it has none."""
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    packed_iface = struct.pack('256s', interface.encode('utf_8'))
-    packed_addr = fcntl.ioctl(sock.fileno(), 0x8915, packed_iface)[20:24]
-    return socket.inet_ntoa(packed_addr)
+    try:
+        packed_iface = struct.pack("256s", interface.encode("utf_8")[:15])
+        packed_addr = fcntl.ioctl(sock.fileno(), 0x8915, packed_iface)[20:24]
+        return socket.inet_ntoa(packed_addr)
+    except OSError:
+        return None
+    finally:
+        sock.close()
+
+
+def ping(address):
+    return sendtoshell(["ping", "-c", "1", "-w", "2", address])[2] == 0
+
+
+def restart_openvpn(service, logger):
+    out, err, code = sendtoshell(
+        ["systemctl", "restart", "openvpn-client@" + service])
+    if code == 0:
+        logger.info("OpenVPN has been successfully restarted.")
+    else:
+        logger.info("ERROR - OpenVPN could not be restarted (code %s): %s %s",
+                    code, out.strip(), err.strip())
+    return code == 0
 
 
 def main():
-    """Blah"""
+    args = parse_args()
+    logger = logging_setup()
 
-    notdone = True
+    logger.info("Starting the OpenVPN Supervisor (service %s, ping %s, "
+                "interface %s, expected ip %s).", args.service, args.ip,
+                args.interface, args.remoteip or "any")
+    time.sleep(args.startup_delay)
+    logger.info("Monitoring started.")
 
-    logger = loggingsetup()
+    failures = 0
+    while True:
+        reason = None
+        current = get_ip_linux(args.interface)
 
-    currentip = get_ip_linux('tun0')
+        if current is None:
+            reason = "%s has no IPv4 address" % args.interface
+        elif args.remoteip and current != args.remoteip:
+            reason = "VPN IP not correct: %s, expected %s" % (current, args.remoteip)
+        elif ping(args.ip):
+            failures = 0
+        else:
+            failures += 1
+            logger.info("Ping to %s failed (%d/%d).", args.ip, failures, args.failures)
+            if failures >= args.failures:
+                reason = "Stale VPN connection detected"
 
-    logger.info("Starting the OpenVPN Supervisor.")
-    logger.info("This simple software utility is designed to monitor the "
-                "status of an OpenVPN connection and restart the OpenVPN "
-                "service when the connection becomes stale.")
-    logger.info("This software utility was developed by James Gebbie-Rayet "
-                "and is made available under the MIT license terms.")
-    logger.info("We are using ip: " + args.ip + " and service: " + args.service)
-    logger.info("Current ip: " + currentip + " and supossed ip: " + args.remoteip)
+        if reason:
+            logger.info("%s - restarting OpenVPN service.", reason)
+            restart_openvpn(args.service, logger)
+            failures = 0
+            time.sleep(args.settle)
 
-    time.sleep(300)
+        time.sleep(args.interval)
 
-    logger.info("Monitoring started - logs will appear at " + logfolder)
-
-    while notdone:
-
-        # Ping out
-        status = sendtoshell("ping -c 1 -w2 " + args.ip)
-
-        if currentip != args.remoteip:
-            logger.info("VPN IP not Correct")
-
-            status = openvpnservicerestart()
-
-            if status[2] == 0:
-
-                logger.info("OpenVPN has been successfully restarted.")
-
-            else:
-
-                notdone = False
-
-                logger.info("ERROR - OpenVPN could not be restarted, here is "
-                            "the output of stdout, stderr and the errorcode:"
-                            "\n\nstdout:\n{0}\n\nstderr:{1}\n\nerrcode = {2}"
-                            .format(status[0], status[1], status[2]))
-
-                logger.info("If the error message is to do with 'permissions' "
-                            "or 'access denied' then you need to make sure "
-                            "that this utility is running as root.")
-
-                time.sleep(120)          
-
-        # If can't ping, issue restart.
-        if status[2] > 0:
-
-            logger.info("Stale VPN connection detected - restarting OpenVPN "
-                        "service.")
-
-            status = openvpnservicerestart()
-
-            if status[2] == 0:
-
-                logger.info("OpenVPN has been successfully restarted.")
-
-            else:
-
-                notdone = False
-
-                logger.info("ERROR - OpenVPN could not be restarted, here is "
-                            "the output of stdout, stderr and the errorcode:"
-                            "\n\nstdout:\n{0}\n\nstderr:{1}\n\nerrcode = {2}"
-                            .format(status[0], status[1], status[2]))
-
-                logger.info("If the error message is to do with 'permissions' "
-                            "or 'access denied' then you need to make sure "
-                            "that this utility is running as root.")
-
-        time.sleep(120)
-
-    logger.info("Exiting the OpenVPN Supervisor.")
-    logger.info("Goodbye for now!")
 
 if __name__ == "__main__":
-
     main()
