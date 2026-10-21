@@ -81,3 +81,26 @@ and that should be it. You should find that the openvpn supervisor is logging to
 
 Hopefully events should be pretty rare and keep the log size down, in future, log
 rotation will be implemented.
+
+ExtraIoT usage (Home Assistant boxes)
+=====================================
+
+Install the unit into ``/etc/systemd/system`` and set the three values for the
+box, then enable it::
+
+    sudo install -m 644 /opt/openvpn-supervisor/openvpn-supervisor.service /etc/systemd/system/
+    sudo systemctl edit openvpn-supervisor   # [Service] Environment="service=<vpn_slug>" Environment="remoteip=10.25.0.X"
+    sudo systemctl daemon-reload && sudo systemctl enable --now openvpn-supervisor
+
+Options (all optional except ``--ip`` and ``--service``):
+
+``--remoteip``       expected tunnel address; a missing or different address restarts the tunnel
+``--interface``      tunnel interface, default ``tun0``
+``--interval``       seconds between checks, default 120
+``--startup-delay``  seconds before the first check, default 300
+``--failures``       consecutive failed pings before a restart, default 2
+
+The supervisor never exits on its own: a failed restart is logged and retried
+on the next cycle, and the unit uses ``Restart=always``. Logs go to the journal
+(``journalctl -u openvpn-supervisor``) and to
+``/var/log/openvpn-supervisor/openvpn-supervisor.log``.
